@@ -1,0 +1,333 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+  <title>Cyber Runner</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: #090d16;
+      color: #f1f5f9;
+      font-family: system-ui, -apple-system, sans-serif;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      height: 100vh;
+      overflow: hidden;
+      user-select: none;
+    }
+    .hud {
+      display: flex;
+      justify-content: space-between;
+      width: 540px;
+      max-width: 95vw;
+      padding: 8px 16px;
+      background: #111827;
+      border: 1px solid #1f2937;
+      border-radius: 8px 8px 0 0;
+      font-size: 13px;
+      font-weight: 600;
+    }
+    .hud span { font-family: monospace; font-size: 15px; }
+    #c {
+      background: #0a0f1d;
+      border: 1px solid #1e293b;
+      border-top: none;
+      border-radius: 0 0 8px 8px;
+      box-shadow: 0 10px 30px rgba(0,0,0,0.6);
+      max-width: 95vw;
+      max-height: 70vh;
+      aspect-ratio: 540 / 320;
+    }
+    .overlay {
+      position: absolute;
+      width: 540px;
+      max-width: 95vw;
+      height: 320px;
+      background: rgba(9, 13, 22, 0.88);
+      backdrop-filter: blur(4px);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 14px;
+      z-index: 10;
+      border-radius: 8px;
+    }
+    .overlay.hidden { display: none; }
+    .btn {
+      padding: 10px 24px;
+      background: #f43f5e;
+      color: #fff;
+      border: none;
+      border-radius: 6px;
+      font-weight: 700;
+      font-size: 14px;
+      cursor: pointer;
+    }
+    .btn:hover { background: #fb7185; }
+    .hint { color: #64748b; font-size: 12px; margin-top: 8px; }
+  </style>
+</head>
+<body>
+  <div style="position: relative; display: flex; flex-direction: column; align-items: center;">
+    <div class="hud">
+      <div>DISTANCE <span id="dist" style="color:#38bdf8;">0m</span></div>
+      <div>SPEED <span id="spd" style="color:#f59e0b;">1.0x</span></div>
+      <div>RECORD <span id="rec" style="color:#10b981;">0m</span></div>
+    </div>
+    <canvas id="c" width="540" height="320"></canvas>
+    <div id="overlay" class="overlay">
+      <h2 id="ovTitle" style="color:#f43f5e; font-size:26px;">CYBER RUNNER</h2>
+      <p id="ovSub" style="color:#94a3b8; font-size:14px;">Sprint across neon rooftops and dodge laser gates.</p>
+      <button id="startBtn" class="btn">START RUN (SPACE)</button>
+    </div>
+    <div class="hint">Space / Up / Click to JUMP · Down / S to SLIDE · Dodge obstacles</div>
+  </div>
+
+  <script>
+    const canvas = document.getElementById('c');
+    const ctx = canvas.getContext('2d');
+    const distEl = document.getElementById('dist');
+    const spdEl = document.getElementById('spd');
+    const recEl = document.getElementById('rec');
+    const overlay = document.getElementById('overlay');
+    const ovTitle = document.getElementById('ovTitle');
+    const ovSub = document.getElementById('ovSub');
+    const startBtn = document.getElementById('startBtn');
+
+    let audioCtx = null;
+    function beep(freq, dur=0.06) {
+      try {
+        if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        if (audioCtx.state === 'suspended') audioCtx.resume();
+        const osc = audioCtx.createOscillator();
+        const g = audioCtx.createGain();
+        osc.frequency.setValueAtTime(freq, audioCtx.currentTime);
+        g.gain.setValueAtTime(0.06, audioCtx.currentTime);
+        g.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + dur);
+        osc.connect(g);
+        g.connect(audioCtx.destination);
+        osc.start();
+        osc.stop(audioCtx.currentTime + dur);
+      } catch(e) {}
+    }
+
+    const GROUND_Y = 250;
+    let runner = {
+      x: 70,
+      y: GROUND_Y - 36,
+      w: 22,
+      h: 36,
+      vy: 0,
+      isJumping: false,
+      isSliding: false
+    };
+
+    let obstacles = [];
+    let particles = [];
+    let stars = [];
+    let speed = 5;
+    let distance = 0;
+    let record = localStorage.getItem('runner_best') || 0;
+    recEl.textContent = record + 'm';
+    let isPlaying = false;
+    let nextObstacle = 80;
+
+    for (let i = 0; i < 40; i++) {
+      stars.push({ x: Math.random() * canvas.width, y: Math.random() * 180, s: Math.random() * 2 });
+    }
+
+    function initGame() {
+      runner.y = GROUND_Y - 36;
+      runner.vy = 0;
+      runner.h = 36;
+      runner.isJumping = false;
+      runner.isSliding = false;
+      obstacles = [];
+      particles = [];
+      distance = 0;
+      speed = 5;
+      nextObstacle = 90;
+      distEl.textContent = '0m';
+      spdEl.textContent = '1.0x';
+      isPlaying = true;
+      overlay.classList.add('hidden');
+    }
+
+    function jump() {
+      if (!runner.isJumping && !runner.isSliding) {
+        runner.vy = -12.5;
+        runner.isJumping = true;
+        beep(580);
+      }
+    }
+
+    function slide(on) {
+      if (runner.isJumping) return;
+      runner.isSliding = on;
+      if (on) {
+        runner.h = 20;
+        runner.y = GROUND_Y - 20;
+      } else {
+        runner.h = 36;
+        runner.y = GROUND_Y - 36;
+      }
+    }
+
+    function gameOver() {
+      isPlaying = false;
+      beep(160, 0.3);
+      ovTitle.textContent = 'COLLISION DETECTED';
+      ovTitle.style.color = '#ef4444';
+      ovSub.textContent = `Distance: ${Math.floor(distance)}m`;
+      startBtn.textContent = 'RUN AGAIN';
+      overlay.classList.remove('hidden');
+    }
+
+    function update() {
+      if (!isPlaying) return;
+
+      distance += speed * 0.05;
+      distEl.textContent = Math.floor(distance) + 'm';
+      if (distance > record) {
+        record = Math.floor(distance);
+        recEl.textContent = record + 'm';
+        localStorage.setItem('runner_best', record);
+      }
+
+      // Physics
+      if (runner.isJumping) {
+        runner.y += runner.vy;
+        runner.vy += 0.65; // gravity
+        if (runner.y >= GROUND_Y - runner.h) {
+          runner.y = GROUND_Y - runner.h;
+          runner.vy = 0;
+          runner.isJumping = false;
+        }
+      }
+
+      // Spawn obstacles
+      nextObstacle--;
+      if (nextObstacle <= 0) {
+        const type = Math.random() < 0.4 ? 'high' : 'low';
+        obstacles.push({
+          x: canvas.width + 20,
+          y: type === 'high' ? GROUND_Y - 48 : GROUND_Y - 28,
+          w: type === 'high' ? 24 : 18,
+          h: type === 'high' ? 20 : 28,
+          type
+        });
+        nextObstacle = Math.floor(Math.random() * 60 + 60 - Math.min(speed * 2, 30));
+      }
+
+      // Move obstacles
+      for (let i = obstacles.length - 1; i >= 0; i--) {
+        const ob = obstacles[i];
+        ob.x -= speed;
+
+        // Collision check AABB
+        if (runner.x < ob.x + ob.w &&
+            runner.x + runner.w > ob.x &&
+            runner.y < ob.y + ob.h &&
+            runner.y + runner.h > ob.y) {
+          gameOver();
+          return;
+        }
+
+        if (ob.x < -30) obstacles.splice(i, 1);
+      }
+
+      // Speed up slowly
+      if (speed < 11) {
+        speed += 0.0015;
+        spdEl.textContent = (speed / 5).toFixed(1) + 'x';
+      }
+    }
+
+    function render() {
+      ctx.fillStyle = '#090d16';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+      // Stars
+      ctx.fillStyle = '#475569';
+      stars.forEach(s => ctx.fillRect(s.x, s.y, s.s, s.s));
+
+      // Neon City Silhouette
+      ctx.fillStyle = '#111827';
+      ctx.fillRect(40, 160, 60, 90);
+      ctx.fillRect(140, 130, 80, 120);
+      ctx.fillRect(260, 170, 70, 80);
+      ctx.fillRect(380, 140, 90, 110);
+
+      // Ground
+      ctx.strokeStyle = '#38bdf8';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(0, GROUND_Y);
+      ctx.lineTo(canvas.width, GROUND_Y);
+      ctx.stroke();
+
+      ctx.fillStyle = '#0f172a';
+      ctx.fillRect(0, GROUND_Y, canvas.width, canvas.height - GROUND_Y);
+
+      // Obstacles
+      obstacles.forEach(ob => {
+        ctx.fillStyle = ob.type === 'high' ? '#ec4899' : '#f59e0b';
+        ctx.shadowColor = ctx.fillStyle;
+        ctx.shadowBlur = 8;
+        ctx.fillRect(ob.x, ob.y, ob.w, ob.h);
+      });
+      ctx.shadowBlur = 0;
+
+      // Runner
+      if (isPlaying) {
+        ctx.fillStyle = '#38bdf8';
+        ctx.shadowColor = '#38bdf8';
+        ctx.shadowBlur = 10;
+        ctx.fillRect(runner.x, runner.y, runner.w, runner.h);
+
+        // Visor
+        ctx.fillStyle = '#ffffff';
+        ctx.fillRect(runner.x + 12, runner.y + 4, 8, 4);
+
+        // Skateboard / Jet-trail
+        ctx.fillStyle = '#f43f5e';
+        ctx.fillRect(runner.x - 6, runner.y + runner.h - 4, 6, 3);
+        ctx.shadowBlur = 0;
+      }
+    }
+
+    function loop() {
+      update();
+      render();
+      requestAnimationFrame(loop);
+    }
+
+    window.addEventListener('keydown', e => {
+      if (['ArrowUp', 'w', 'W', ' '].includes(e.key)) {
+        jump();
+        e.preventDefault();
+      }
+      if (['ArrowDown', 's', 'S'].includes(e.key)) {
+        slide(true);
+        e.preventDefault();
+      }
+    });
+
+    window.addEventListener('keyup', e => {
+      if (['ArrowDown', 's', 'S'].includes(e.key)) {
+        slide(false);
+      }
+    });
+
+    canvas.addEventListener('mousedown', jump);
+    canvas.addEventListener('touchstart', (e) => { jump(); e.preventDefault(); });
+    startBtn.addEventListener('click', initGame);
+
+    loop();
+  </script>
+</body>
+</html>

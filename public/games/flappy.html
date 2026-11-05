@@ -1,0 +1,278 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+  <title>Pixel Pilot</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: #090d16;
+      color: #f1f5f9;
+      font-family: system-ui, -apple-system, sans-serif;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      height: 100vh;
+      overflow: hidden;
+      user-select: none;
+    }
+    .hud {
+      display: flex;
+      justify-content: space-between;
+      width: 360px;
+      max-width: 95vw;
+      padding: 8px 16px;
+      background: #0f172a;
+      border: 1px solid #1e293b;
+      border-radius: 8px 8px 0 0;
+      font-size: 13px;
+      font-weight: 600;
+    }
+    #canvas {
+      background: #0c1a2e;
+      border: 1px solid #1e293b;
+      border-top: none;
+      border-radius: 0 0 8px 8px;
+      box-shadow: 0 10px 25px rgba(0,0,0,0.5);
+      max-width: 95vw;
+      max-height: 70vh;
+      aspect-ratio: 360 / 520;
+    }
+    .overlay {
+      position: absolute;
+      width: 360px;
+      max-width: 95vw;
+      height: 520px;
+      background: rgba(9, 13, 22, 0.88);
+      backdrop-filter: blur(4px);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 14px;
+      z-index: 10;
+      border-radius: 8px;
+    }
+    .overlay.hidden { display: none; }
+    .btn {
+      padding: 10px 24px;
+      background: #10b981;
+      color: #090d16;
+      border: none;
+      border-radius: 6px;
+      font-weight: 700;
+      font-size: 14px;
+      cursor: pointer;
+    }
+    .btn:hover { background: #34d399; }
+    .hint { color: #64748b; font-size: 12px; margin-top: 8px; }
+  </style>
+</head>
+<body>
+  <div style="position: relative; display: flex; flex-direction: column; align-items: center;">
+    <div class="hud">
+      <div>SCORE <span id="score" style="color:#10b981; font-family:monospace; font-size:16px;">0</span></div>
+      <div>BEST <span id="best" style="color:#f59e0b; font-family:monospace; font-size:16px;">0</span></div>
+    </div>
+    <canvas id="canvas" width="360" height="520"></canvas>
+    <div id="overlay" class="overlay">
+      <h2 id="ovTitle" style="color:#10b981; font-size:26px;">PIXEL PILOT</h2>
+      <p id="ovSub" style="color:#94a3b8; font-size:14px;">Flap through energy columns.</p>
+      <button id="startBtn" class="btn">START FLIGHT (SPACE)</button>
+    </div>
+    <div class="hint">Tap / Click / Space to Flap</div>
+  </div>
+
+  <script>
+    const canvas = document.getElementById('canvas');
+    const ctx = canvas.getContext('2d');
+    const scoreEl = document.getElementById('score');
+    const bestEl = document.getElementById('best');
+    const overlay = document.getElementById('overlay');
+    const ovTitle = document.getElementById('ovTitle');
+    const ovSub = document.getElementById('ovSub');
+    const startBtn = document.getElementById('startBtn');
+
+    let audioCtx = null;
+    function beep(f, d=0.06, type='square') {
+      try {
+        if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        if (audioCtx.state === 'suspended') audioCtx.resume();
+        const o = audioCtx.createOscillator();
+        const g = audioCtx.createGain();
+        o.type = type;
+        o.frequency.setValueAtTime(f, audioCtx.currentTime);
+        g.gain.setValueAtTime(0.06, audioCtx.currentTime);
+        g.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + d);
+        o.connect(g);
+        g.connect(audioCtx.destination);
+        o.start();
+        o.stop(audioCtx.currentTime + d);
+      } catch(e) {}
+    }
+
+    let bird = { x: 80, y: 220, r: 12, vy: 0 };
+    let pipes = [];
+    let score = 0;
+    let best = localStorage.getItem('pilot_best') || 0;
+    bestEl.textContent = best;
+    let isPlaying = false;
+    let frame = 0;
+
+    const GAP = 130;
+    const PIPE_SPEED = 2.4;
+
+    function initGame() {
+      bird.y = 220;
+      bird.vy = 0;
+      pipes = [];
+      score = 0;
+      scoreEl.textContent = 0;
+      isPlaying = true;
+      overlay.classList.add('hidden');
+    }
+
+    function flap() {
+      if (!isPlaying) return;
+      bird.vy = -6.5;
+      beep(520, 0.05);
+    }
+
+    function gameOver() {
+      isPlaying = false;
+      beep(180, 0.25, 'sawtooth');
+      ovTitle.textContent = 'SYSTEM CRASH';
+      ovTitle.style.color = '#ef4444';
+      ovSub.textContent = `Score: ${score}`;
+      startBtn.textContent = 'FLY AGAIN';
+      overlay.classList.remove('hidden');
+    }
+
+    function update() {
+      if (!isPlaying) return;
+
+      frame++;
+
+      // Bird physics
+      bird.vy += 0.32; // gravity
+      bird.y += bird.vy;
+
+      // Ground or ceiling collision
+      if (bird.y + bird.r >= canvas.height || bird.y - bird.r <= 0) {
+        gameOver();
+        return;
+      }
+
+      // Spawn pipes
+      if (frame % 85 === 0) {
+        const topH = Math.floor(Math.random() * (canvas.height - GAP - 120)) + 40;
+        pipes.push({
+          x: canvas.width,
+          topH,
+          bottomY: topH + GAP,
+          w: 48,
+          passed: false
+        });
+      }
+
+      // Move pipes
+      for (let i = pipes.length - 1; i >= 0; i--) {
+        const p = pipes[i];
+        p.x -= PIPE_SPEED;
+
+        // Score
+        if (!p.passed && p.x + p.w < bird.x) {
+          p.passed = true;
+          score++;
+          scoreEl.textContent = score;
+          if (score > best) {
+            best = score;
+            bestEl.textContent = best;
+            localStorage.setItem('pilot_best', best);
+          }
+          beep(750, 0.08, 'triangle');
+        }
+
+        // Collision check
+        if (bird.x + bird.r > p.x && bird.x - bird.r < p.x + p.w) {
+          if (bird.y - bird.r < p.topH || bird.y + bird.r > p.bottomY) {
+            gameOver();
+            return;
+          }
+        }
+
+        if (p.x < -60) pipes.splice(i, 1);
+      }
+    }
+
+    function render() {
+      // Sky
+      ctx.fillStyle = '#0a1424';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+      // Pipes
+      pipes.forEach(p => {
+        // Top pipe
+        ctx.fillStyle = '#10b981';
+        ctx.fillRect(p.x, 0, p.w, p.topH);
+        ctx.fillStyle = '#059669';
+        ctx.fillRect(p.x - 3, p.topH - 16, p.w + 6, 16);
+
+        // Bottom pipe
+        ctx.fillStyle = '#10b981';
+        ctx.fillRect(p.x, p.bottomY, p.w, canvas.height - p.bottomY);
+        ctx.fillStyle = '#059669';
+        ctx.fillRect(p.x - 3, p.bottomY, p.w + 6, 16);
+      });
+
+      // Bird
+      if (isPlaying) {
+        ctx.fillStyle = '#f59e0b';
+        ctx.shadowColor = '#f59e0b';
+        ctx.shadowBlur = 8;
+        ctx.beginPath();
+        ctx.arc(bird.x, bird.y, bird.r, 0, Math.PI * 2);
+        ctx.fill();
+
+        // Eye
+        ctx.fillStyle = '#ffffff';
+        ctx.fillRect(bird.x + 4, bird.y - 6, 4, 4);
+
+        // Beak
+        ctx.fillStyle = '#ef4444';
+        ctx.fillRect(bird.x + 10, bird.y - 2, 6, 4);
+        ctx.shadowBlur = 0;
+      }
+    }
+
+    function loop() {
+      update();
+      render();
+      requestAnimationFrame(loop);
+    }
+
+    window.addEventListener('keydown', e => {
+      if (e.key === ' ' || e.key === 'ArrowUp' || e.key === 'w') {
+        if (!isPlaying) initGame();
+        else flap();
+        e.preventDefault();
+      }
+    });
+
+    canvas.addEventListener('mousedown', () => {
+      if (!isPlaying) initGame();
+      else flap();
+    });
+    canvas.addEventListener('touchstart', e => {
+      if (!isPlaying) initGame();
+      else flap();
+      e.preventDefault();
+    });
+
+    startBtn.addEventListener('click', initGame);
+    loop();
+  </script>
+</body>
+</html>
